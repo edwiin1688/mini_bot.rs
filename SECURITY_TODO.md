@@ -78,7 +78,7 @@
 - 無法防止無限工具呼叫迴圈
 
 **修復方向**:
-- [ ] 在 `execute_tool` 前檢查迭代次數
+- [x] 在 `execute_tool` 前檢查迭代次數
 - [ ] 添加最大執行時間限制
 
 ---
@@ -160,3 +160,7 @@ cargo test --test integration
 - [Rust 安全指南](https://anssi-fr.github.io/rust-secure-coding/)
 - [OWASP Top 10](https://owasp.org/www-project-top-ten/)
 - [tower-http 安全 Middleware](https://docs.rs/tower-http/latest/tower_http/)
+
+---
+
+*本文件最後更新於 2026-03-04*
