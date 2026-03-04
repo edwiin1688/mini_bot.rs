@@ -1,11 +1,15 @@
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::path::PathBuf;
+
+const ENV_API_KEY: &str = "MINIBOT_API_KEY";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub version: String,
     pub default_provider: String,
     pub default_model: String,
+    #[serde(default)]
     pub api_key: String,
     pub gateway: GatewayConfig,
     pub agent: AgentConfig,
@@ -60,8 +64,19 @@ impl Default for Config {
 impl Config {
     pub fn load(path: &PathBuf) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)?;
+
+        if let Ok(env_key) = env::var(ENV_API_KEY) {
+            if !env_key.is_empty() {
+                config.api_key = env_key;
+            }
+        }
+
         Ok(config)
+    }
+
+    pub fn api_key_from_env() -> Option<String> {
+        env::var(ENV_API_KEY).ok().filter(|k| !k.is_empty())
     }
 
     #[allow(dead_code)]
