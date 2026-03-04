@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - API Key 環境變數支援 (`MINIBOT_API_KEY`)
 - File Tool 檔案大小限制 (預設 10MB)
+- Shell Tool 命令執行超時 (預設 30 秒)
 
 ### Changed
 - Agent 工具迭代次數限制（使用 `max_tool_iterations` 配置）

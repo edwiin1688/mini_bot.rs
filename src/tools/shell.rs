@@ -1,22 +1,38 @@
 use super::traits::{Tool, ToolArgument, ToolDefinition, ToolResult};
 use async_trait::async_trait;
-use std::process::Command;
+use tokio::process::Command as AsyncCommand;
+use tokio::time::{timeout, Duration};
+
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug)]
 pub struct ShellTool {
     allowed_commands: Vec<String>,
+    timeout_secs: u64,
 }
 
 impl ShellTool {
     pub fn new() -> Self {
         Self {
             allowed_commands: vec![],
+            timeout_secs: DEFAULT_TIMEOUT_SECS,
         }
     }
 
     #[allow(dead_code)]
     pub fn with_allowed(commands: Vec<String>) -> Self {
-        Self { allowed_commands: commands }
+        Self {
+            allowed_commands: commands,
+            timeout_secs: DEFAULT_TIMEOUT_SECS,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_timeout(commands: Vec<String>, timeout_secs: u64) -> Self {
+        Self {
+            allowed_commands: commands,
+            timeout_secs,
+        }
     }
 
     fn is_command_allowed(&self, cmd: &str) -> bool {
@@ -70,14 +86,33 @@ impl Tool for ShellTool {
             });
         }
 
-        #[cfg(unix)]
-        let output = Command::new("sh").arg("-c").arg(command).output();
+        let timeout_duration = Duration::from_secs(self.timeout_secs);
 
-        #[cfg(windows)]
-        let output = Command::new("cmd").args(["/C", command]).output();
+        let result = timeout(
+            timeout_duration,
+            async {
+                #[cfg(unix)]
+                {
+                    AsyncCommand::new("sh")
+                        .arg("-c")
+                        .arg(command)
+                        .output()
+                        .await
+                }
 
-        match output {
-            Ok(output) => {
+                #[cfg(windows)]
+                {
+                    AsyncCommand::new("cmd")
+                        .args(["/C", command])
+                        .output()
+                        .await
+                }
+            },
+        )
+        .await;
+
+        match result {
+            Ok(Ok(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
@@ -99,10 +134,18 @@ impl Tool for ShellTool {
                     })
                 }
             }
-            Err(e) => Ok(ToolResult {
+            Ok(Err(e)) => Ok(ToolResult {
                 success: false,
                 output: String::new(),
                 error: Some(format!("Command execution failed: {}", e)),
+            }),
+            Err(_) => Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!(
+                    "Command timed out after {} seconds",
+                    self.timeout_secs
+                )),
             }),
         }
     }
