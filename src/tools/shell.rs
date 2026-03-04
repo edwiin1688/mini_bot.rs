@@ -1,31 +1,45 @@
 use super::traits::{Tool, ToolArgument, ToolDefinition, ToolResult};
 use async_trait::async_trait;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+use tokio::time::timeout;
 
 #[derive(Debug)]
 pub struct ShellTool {
     allowed_commands: Vec<String>,
+    timeout: Duration,
 }
 
 impl ShellTool {
     pub fn new() -> Self {
         Self {
             allowed_commands: vec![],
+            timeout: Duration::from_secs(30),
         }
     }
 
     #[allow(dead_code)]
     pub fn with_allowed(commands: Vec<String>) -> Self {
-        Self { allowed_commands: commands }
+        Self {
+            allowed_commands: commands,
+            timeout: Duration::from_secs(30),
+        }
+    }
+
+    pub fn with_config(commands: Vec<String>, timeout_secs: u64) -> Self {
+        Self {
+            allowed_commands: commands,
+            timeout: Duration::from_secs(timeout_secs),
+        }
     }
 
     fn is_command_allowed(&self, cmd: &str) -> bool {
         if self.allowed_commands.is_empty() {
-            return true;
+            return false;
         }
         self.allowed_commands
             .iter()
-            .any(|allowed| cmd.starts_with(allowed))
+            .any(|allowed| cmd == allowed)
     }
 }
 
@@ -70,14 +84,29 @@ impl Tool for ShellTool {
             });
         }
 
-        #[cfg(unix)]
-        let output = Command::new("sh").arg("-c").arg(command).output();
+        let timeout = self.timeout;
 
-        #[cfg(windows)]
-        let output = Command::new("cmd").args(["/C", command]).output();
+        let result = timeout(timeout, async {
+            #[cfg(unix)]
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output();
 
-        match output {
-            Ok(output) => {
+            #[cfg(windows)]
+            let output = Command::new("cmd")
+                .args(["/C", command])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output();
+
+            output
+        }).await;
+
+        match result {
+            Ok(Ok(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
@@ -99,10 +128,15 @@ impl Tool for ShellTool {
                     })
                 }
             }
-            Err(e) => Ok(ToolResult {
+            Ok(Err(e)) => Ok(ToolResult {
                 success: false,
                 output: String::new(),
                 error: Some(format!("Command execution failed: {}", e)),
+            }),
+            Err(_) => Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("Command execution timed out after {:?}", timeout)),
             }),
         }
     }
@@ -130,21 +164,23 @@ mod tests {
     #[test]
     fn test_command_allowlist_empty() {
         let tool = ShellTool::new();
-        assert!(tool.is_command_allowed("ls"));
+        assert!(!tool.is_command_allowed("ls"));
     }
 
     #[test]
     fn test_command_allowlist_restricted() {
         let tool = ShellTool::with_allowed(vec!["ls".to_string(), "echo".to_string()]);
-        assert!(tool.is_command_allowed("ls -la"));
-        assert!(tool.is_command_allowed("echo hello"));
+        assert!(tool.is_command_allowed("ls"));
+        assert!(tool.is_command_allowed("echo"));
+        assert!(!tool.is_command_allowed("ls -la"));
+        assert!(!tool.is_command_allowed("echo hello"));
         assert!(!tool.is_command_allowed("rm -rf /"));
     }
 
     #[tokio::test]
     async fn test_shell_execute_echo() {
-        let tool = ShellTool::new();
-        let result = tool.execute(r#"{"command": "echo hello"}"#).await;
+        let tool = ShellTool::with_allowed(vec!["echo".to_string()]);
+        let result = tool.execute(r#"{"command": "echo"}"#).await;
         assert!(result.unwrap().success);
     }
 

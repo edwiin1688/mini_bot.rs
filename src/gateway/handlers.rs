@@ -8,6 +8,20 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
+fn sanitize_for_log(s: &str) -> String {
+    let sensitive_keys = ["api_key", "password", "token", "secret", "credential"];
+    let mut result = s.to_string();
+    
+    for key in sensitive_keys {
+        let pattern = format!(r#""{}"\s*:\s*"[^"]*"#, key);
+        if let Ok(re) = regex::Regex::new(&pattern) {
+            result = re.replace_all(&result, format!(r#""{}":"***"#, key)).to_string();
+        }
+    }
+    
+    result
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WebhookRequest {
     pub message: String,
@@ -41,7 +55,8 @@ pub async fn webhook_handler(
     State(state): State<GatewayState>,
     Json(payload): Json<WebhookRequest>,
 ) -> Json<WebhookResponse> {
-    info!("Received webhook request: {:?}", payload.message);
+    let sanitized_message = sanitize_for_log(&payload.message);
+    info!("Received webhook request: {}", sanitized_message);
 
     let session_id = payload.session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
@@ -49,7 +64,8 @@ pub async fn webhook_handler(
 
     match agent.chat(&payload.message).await {
         Ok(response) => {
-            info!("Agent response: {}", response);
+            let sanitized_response = sanitize_for_log(&response);
+            info!("Agent response: {}", sanitized_response);
             Json(WebhookResponse {
                 response,
                 session_id: Some(session_id),

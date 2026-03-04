@@ -7,6 +7,7 @@ use crate::providers::{Message, Provider, ToolCall};
 use crate::tools::{FileTool, ShellTool, Tool, ToolResult};
 use anyhow::Result;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub struct Agent {
     provider: Arc<dyn Provider>,
@@ -14,22 +15,33 @@ pub struct Agent {
     history: history::History,
     #[allow(dead_code)]
     memory: Option<SqliteMemory>,
-    #[allow(dead_code)]
     config: Config,
+    tool_iterations: usize,
+    start_time: Option<Instant>,
 }
 
 impl Agent {
     pub fn new(config: Config) -> Result<Self> {
         let provider = create_provider(
             &config.default_provider,
-            config.api_key.clone(),
+            config.get_api_key(),
             config.default_model.clone(),
             config.agent.temperature,
         ).map_err(anyhow::Error::msg)?;
 
         let tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(ShellTool::new()),
-            Arc::new(FileTool::new()),
+            Arc::new(ShellTool::with_config(
+                config.security.allowed_commands.clone(),
+                30,
+            )),
+            Arc::new(FileTool::with_config(
+                if config.security.workspace_only {
+                    config.security.allowed_roots.first().cloned()
+                } else {
+                    None
+                },
+                10 * 1024 * 1024,
+            )),
         ];
 
         Ok(Self {
@@ -38,14 +50,28 @@ impl Agent {
             history: history::History::new(config.agent.max_history_messages),
             memory: None,
             config,
+            tool_iterations: 0,
+            start_time: None,
         })
     }
 
     pub async fn chat(&mut self, user_input: &str) -> Result<String> {
+        let max_time = Duration::from_secs(self.config.agent.max_execution_time_secs);
+        self.start_time = Some(Instant::now());
+
         self.history.add_message(Message {
             role: "user".to_string(),
             content: user_input.to_string(),
         });
+
+        if let Some(start) = self.start_time {
+            if start.elapsed() > max_time {
+                return Err(anyhow::anyhow!(
+                    "Max execution time ({}) exceeded",
+                    max_time.as_secs()
+                ));
+            }
+        }
 
         let tool_definitions: Vec<serde_json::Value> = self
             .tools
@@ -61,8 +87,32 @@ impl Agent {
         self.history.add_message(response.message.clone());
 
         if !response.tool_calls.is_empty() {
+            if self.tool_iterations >= self.config.agent.max_tool_iterations {
+                return Err(anyhow::anyhow!(
+                    "Max tool iterations ({}) reached",
+                    self.config.agent.max_tool_iterations
+                ));
+            }
+
             for tool_call in &response.tool_calls {
+                if self.tool_iterations >= self.config.agent.max_tool_iterations {
+                    return Err(anyhow::anyhow!(
+                        "Max tool iterations ({}) reached",
+                        self.config.agent.max_tool_iterations
+                    ));
+                }
+
+                if let Some(start) = self.start_time {
+                    if start.elapsed() > max_time {
+                        return Err(anyhow::anyhow!(
+                            "Max execution time ({}) exceeded",
+                            max_time.as_secs()
+                        ));
+                    }
+                }
+
                 let result = self.execute_tool(tool_call).await.map_err(anyhow::Error::msg)?;
+                self.tool_iterations += 1;
                 
                 self.history.add_message(Message {
                     role: "tool".to_string(),
